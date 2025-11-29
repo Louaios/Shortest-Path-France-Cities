@@ -5,10 +5,13 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 import time
+import tracemalloc
+import tracemalloc
 
 graph = None
-
+######################
 # MAP & GRAPH FUNCTIONS
+######################
 def get_map_data(city_name):
     place_name = city_name + ", France"
     global graph
@@ -41,9 +44,50 @@ def end_execution_timer(start_timer):
     elapsed = end_time - start_timer
     return elapsed
 
-# search algorithmes
 
+def measure_tracemalloc(fn, *args, **kwargs):
+    tracemalloc.start()
+    try:
+        result = fn(*args, **kwargs)
+        current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return result, peak
+
+
+def fmt_bytes(b):
+    try:
+        b = float(b)
+    except Exception:
+        return str(b)
+    if b < 1024:
+        return f"{b:.0f} B"
+    kb = b / 1024.0
+    if kb < 1024:
+        return f"{kb:.2f} KB"
+    mb = kb / 1024.0
+    return f"{mb:.2f} MB"
+
+######################
+# trace de mémoire
+######################
+
+def measure_with_tracemalloc(fn, *args, **kwargs):
+    tracemalloc.start()
+    try:
+        result = fn(*args, **kwargs)
+        current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return result, peak
+
+######################
+# search algorithmes
+######################
+
+######################
 # BFS
+######################
 def bfs_search(graph, start, goal):
     t0 = start_execution_timer()
     from collections import deque
@@ -64,7 +108,9 @@ def bfs_search(graph, start, goal):
     elapsed = end_execution_timer(t0)
     return None, elapsed
 
+######################
 # DFS
+######################
 def dfs_search(graph, start, goal):
     t0 = start_execution_timer()
     stack = [[start]]
@@ -84,7 +130,9 @@ def dfs_search(graph, start, goal):
     elapsed = end_execution_timer(t0)
     return None, elapsed
 
+######################
 # IDS
+######################
 def iterative_deepening(graph, start, goal, max_depth=1000):
     t0 = start_execution_timer()
     def dls(node, goal, depth, path, visited):
@@ -109,34 +157,65 @@ def iterative_deepening(graph, start, goal, max_depth=1000):
     elapsed = end_execution_timer(t0)
     return None, elapsed
 
+######################
+# Dijkstra (UCS)
+######################
+def dijkstra_search(graph, source, target):
+    t0 = start_execution_timer()
+    return nx.dijkstra_path(graph, source, target, weight='length'), end_execution_timer(t0)
+######################
 # A* Search
+######################
 def a_star_search(graph, source, target):
     t0 = start_execution_timer()
     return nx.astar_path(graph, source, target, weight='length'), end_execution_timer(t0)
 
+######################
 # IDA*
+######################
 def ida_star_search(graph, start, goal):
     import math
     t0 = start_execution_timer()
-    
     def heuristic(u, v):
         x1, y1 = graph.nodes[u]['x'], graph.nodes[u]['y']
         x2, y2 = graph.nodes[v]['x'], graph.nodes[v]['y']
         return math.hypot(x2 - x1, y2 - y1)
 
+    # safety limit to avoid very long runs
+    expanded = 0
+    max_expanded = 200000
+
     def search(path, g, bound):
+        nonlocal expanded
         node = path[-1]
         f = g + heuristic(node, goal)
         if f > bound:
             return f
         if node == goal:
-            return "FOUND"
+            return path
         minimum = float('inf')
         for neighbor in graph.neighbors(node):
             if neighbor not in path:
-                t = search(path + [neighbor], g + graph[node][neighbor][0].get('length', 1), bound)
-                if t == "FOUND":
-                    return "FOUND"
+                expanded += 1
+                if expanded > max_expanded:
+                    raise RuntimeError('IDA* exceeded node expansion limit')
+
+                # get best edge length between node and neighbor (if multiple edges exist)
+                step_cost = 1
+                data = graph.get_edge_data(node, neighbor)
+                if data:
+                    best_len = None
+                    for key, ed in data.items():
+                        length = ed.get('length')
+                        if length is not None:
+                            if best_len is None or length < best_len:
+                                best_len = length
+                    if best_len is not None:
+                        step_cost = best_len
+
+                t = search(path + [neighbor], g + step_cost, bound)
+                if isinstance(t, list):
+                    return t
                 if t < minimum:
                     minimum = t
         return minimum
@@ -145,15 +224,18 @@ def ida_star_search(graph, start, goal):
     path = [start]
     while True:
         t = search(path, 0, bound)
-        if t == "FOUND":
+        if isinstance(t, list):
             elapsed = end_execution_timer(t0)
-            return path, elapsed
+            return t, elapsed
         if t == float('inf'):
             elapsed = end_execution_timer(t0)
             return None, elapsed
         bound = t
 
+######################
 # VISUALIZATION
+######################
+
 def plot_shortest_path(graph, shortest_path):
     fig, ax = ox.plot_graph_route(
         graph, shortest_path,
@@ -207,7 +289,9 @@ def compute_path_metrics(G, path, default_speed_kph=30.0):
 
     return hop_count, total_distance, total_time_s
 
+######################
 #Logic
+######################
 def main():
     selected_source = listbox_source.get(tk.ACTIVE)
     selected_target = listbox_target.get(tk.ACTIVE)
@@ -239,17 +323,18 @@ def main():
     messagebox.showinfo("Info", f"Running {selected_algorithm}...")
 
     try:
-   
         if selected_algorithm == "BFS":
-            path, elapsed = bfs_search(graph, source, target)
+            (path, elapsed), peak = measure_tracemalloc(bfs_search, graph, source, target)
         elif selected_algorithm == "DFS":
-            path, elapsed = dfs_search(graph, source, target)
+            (path, elapsed), peak = measure_tracemalloc(dfs_search, graph, source, target)
         elif selected_algorithm == "Iterative Deepening":
-            path, elapsed = iterative_deepening(graph, source, target)
+            (path, elapsed), peak = measure_tracemalloc(iterative_deepening, graph, source, target)
         elif selected_algorithm == "A*":
-            path, elapsed = a_star_search(graph, source, target)
+            (path, elapsed), peak = measure_tracemalloc(a_star_search, graph, source, target)
         elif selected_algorithm == "IDA*":
-            path, elapsed = ida_star_search(graph, source, target)
+            (path, elapsed), peak = measure_tracemalloc(ida_star_search, graph, source, target)
+        elif selected_algorithm == "Dijkstra":
+            (path, elapsed), peak = measure_tracemalloc(dijkstra_search, graph, source, target)
         else:
             messagebox.showwarning("Attention!", "Selectionnez un algorithme valide.")
             return
@@ -257,13 +342,16 @@ def main():
         if path:
             plot_shortest_path(graph, path)
             messagebox.showinfo("Success",
-                                f"Temps d'exécution: {elapsed:.6f} s\nLongueur du chemin: {len(path)} nœuds")
+                                f"Temps d'exécution: {elapsed:.6f} s\nLongueur du chemin: {len(path)} nœuds\nPic mémoire: {fmt_bytes(peak)}")
         else:
-            messagebox.showerror("Erreur", f"Pas de chemin trouvé! (Elapsed: {elapsed:.6f} s)")
+            messagebox.showerror("Erreur",
+                                 f"Pas de chemin trouvé! (Elapsed: {elapsed:.6f} s)\nPic mémoire: {fmt_bytes(peak)}")
     except Exception as e:
         messagebox.showerror("Erreur", str(e))
 
+######################
 # INTERFACE
+######################
 root = tk.Tk()
 root.title("Shortest Path Finder - France")
 root.geometry("480x500")
@@ -289,7 +377,7 @@ combobox_city.bind("<<ComboboxSelected>>", update_nodes)
 
 label_algo = ttk.Label(frame_input, text="Select Algorithm:")
 label_algo.pack(pady=5)
-algorithms = ["BFS", "DFS", "Iterative Deepening", "A*", "IDA*"]
+algorithms = ["BFS", "DFS", "Iterative Deepening", "A*", "IDA*", "Dijkstra"]
 combobox_algorithm = ttk.Combobox(frame_input, values=algorithms)
 combobox_algorithm.pack(pady=5)
 
